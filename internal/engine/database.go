@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type DB struct {
@@ -26,6 +27,17 @@ type DB struct {
 	commits      uint64
 	conflicts    uint64
 	queries      uint64
+
+	exportSlots           chan struct{}
+	exportCounterMu       sync.Mutex
+	backupsStarted        uint64
+	backupsSpooled        uint64
+	backupsCompleted      uint64
+	backupsAborted        uint64
+	backupDeliveredBytes  int64
+	backupCaptureElapsed  time.Duration
+	backupEncodeElapsed   time.Duration
+	backupDeliveryElapsed time.Duration
 }
 
 func Open(dir string) (*DB, error) {
@@ -47,7 +59,11 @@ func Open(dir string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &DB{dir: absolute, catalog: catalog.New(), store: versions.New(), wal: w, transactions: map[string]*Transaction{}}
+	d := &DB{dir: absolute, catalog: catalog.New(), store: versions.New(), wal: w, transactions: map[string]*Transaction{}, exportSlots: make(chan struct{}, DefaultMaxConcurrentExports)}
+	if err = d.sweepSpool(); err != nil {
+		w.Close()
+		return nil, fmt.Errorf("export spool: %w", err)
+	}
 	if !missing {
 		d.catalog = image.Catalog
 		d.store = image.Store

@@ -33,6 +33,9 @@ class Session:
   except urllib.error.HTTPError as e:code=e.code;body=e.read()
   if code!=status:raise RuntimeError(f'{method} {path}: expected {status}, got {code}: {body.decode()}')
   return body if raw else json.loads(body)
+ def call_raw_headers(self,path):
+  req=urllib.request.Request(self.url+path,method='GET')
+  with urllib.request.urlopen(req,timeout=12) as response:return response.read(),dict(response.headers)
  def begin(self,readonly=False):return self.call('POST','/transactions',{'read_only':readonly},201)['id']
  def put(self,tx,row,status=200,insert=False):return self.call('POST',f'/transactions/{tx}/put',{'relation':'spectra','row':row,'insert_only':insert},status)
  def commit(self,tx,status=200):return self.call('POST',f'/transactions/{tx}/commit',status=status)
@@ -121,7 +124,11 @@ def walkthrough(name,binary):
     locked=subprocess.run([str(binary),'-data',str(s.root),'-listen','127.0.0.1:0'],capture_output=True,text=True,timeout=5)
     require(locked.returncode!=0 and 'already open' in locked.stderr,'exclusive directory ownership missing');observations={'checkpoint':at,'head':s.stats()['sequence']}
    elif name=='backup-restore':
-    backup=s.call('GET','/backup',raw=True);path=temp/'portable.lmi';path.write_bytes(backup)
+    backup,headers=s.call_raw_headers('/backup');path=temp/'portable.lmi';path.write_bytes(backup)
+    require(headers['Content-Length']==str(len(backup)),'backup length not declared')
+    require(headers['X-Lamina-Sha256']==json.loads(backup)['sha256'],'header digest disagrees with envelope')
+    export_stats=s.stats()['backups']
+    require(export_stats['active_exports']==0 and export_stats['completed']>=1,'export accounting not observable')
     frozen=s.query()['rows'];tx=s.begin();s.put(tx,tuple_(8));s.commit(tx)
     other=Session(binary,temp/'restored',path).start();require(other.query()['rows']==frozen,'backup mutated with source')
     tx=other.begin();other.put(tx,tuple_(9));result=other.commit(tx);other.stop();other.start()
@@ -129,7 +136,11 @@ def walkthrough(name,binary):
     other.call('GET','/changes?after=0',status=410)
     broken=json.loads(backup);broken['sha256']='0'*64;bad=temp/'bad.lmi';bad.write_text(json.dumps(broken))
     failed=subprocess.run([str(binary),'-restore',str(bad),'-data',str(temp/'badrestore')],capture_output=True,text=True,timeout=5)
-    require(failed.returncode!=0 and not (temp/'badrestore').exists(),'invalid backup published');observations={'restored_commit':result,'original_sequence':seed_seq}
+    require(failed.returncode!=0 and not (temp/'badrestore').exists(),'invalid backup published')
+    observations={'restored_commit':result,'original_sequence':seed_seq,
+     'export':{'sequence':int(headers['X-Lamina-Sequence']),'digest':headers['X-Lamina-Sha256'],
+               'capture_ms':int(headers['X-Lamina-Capture-Ms']),'encode_ms':int(headers['X-Lamina-Encode-Ms']),
+               'stats':export_stats}}
    elif name=='changes':
     tx=s.begin()
     for n in range(8,12):s.put(tx,tuple_(n))

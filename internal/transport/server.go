@@ -10,13 +10,41 @@ import (
 	"time"
 )
 
+// BackupTransferBudget bounds one backup download independently of the
+// server-wide WriteTimeout. Stall is the maximum silence between successful
+// chunks (slow but progressing clients are allowed); Overall caps total time.
+type BackupTransferBudget struct {
+	Stall   time.Duration
+	Overall time.Duration
+}
+
+type Config struct {
+	BackupStall   time.Duration
+	BackupOverall time.Duration
+}
+
 type Server struct {
-	db  *engine.DB
-	mux *http.ServeMux
+	db           *engine.DB
+	mux          *http.ServeMux
+	backupBudget BackupTransferBudget
 }
 
 func New(db *engine.DB) *Server {
-	s := &Server{db: db, mux: http.NewServeMux()}
+	return NewWithConfig(db, Config{BackupStall: 60 * time.Second, BackupOverall: 30 * time.Minute})
+}
+
+func NewWithConfig(db *engine.DB, cfg Config) *Server {
+	s := &Server{
+		db:           db,
+		mux:          http.NewServeMux(),
+		backupBudget: BackupTransferBudget{Stall: cfg.BackupStall, Overall: cfg.BackupOverall},
+	}
+	if s.backupBudget.Stall <= 0 {
+		s.backupBudget.Stall = 60 * time.Second
+	}
+	if s.backupBudget.Overall <= 0 {
+		s.backupBudget.Overall = 30 * time.Minute
+	}
 	s.routes()
 	return s
 }
@@ -96,6 +124,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST "+p+"/checkpoint", s.checkpoint)
 	s.mux.HandleFunc("POST "+p+"/vacuum", s.vacuum)
 	s.mux.HandleFunc("GET "+p+"/backup", s.backup)
+	s.mux.HandleFunc("HEAD "+p+"/backup", s.backupHead)
 	s.mux.HandleFunc("GET "+p+"/changes", s.changes)
 	s.mux.HandleFunc("GET "+p+"/stats", s.stats)
 }

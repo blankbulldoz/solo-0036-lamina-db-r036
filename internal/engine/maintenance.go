@@ -24,21 +24,6 @@ func (d *DB) Checkpoint() (uint64, error) {
 	}
 	return d.sequence, nil
 }
-func (d *DB) Backup() ([]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if err := d.usable(); err != nil {
-		return nil, err
-	}
-	b, err := snapshot.Encode(d.image())
-	if err != nil {
-		return nil, err
-	}
-	if len(b) > snapshot.MaxImage {
-		return nil, fault("capacity", "backup exceeds 128MiB")
-	}
-	return b, nil
-}
 func Restore(dir string, data []byte) error {
 	image, err := snapshot.Decode(data)
 	if err != nil {
